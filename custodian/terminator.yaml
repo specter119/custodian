@@ -1,0 +1,6 @@
+null:
+    q_cancel_cmd: null
+    patten_text: null
+SLURM:
+    q_cancel_cmd: scancel --signal=KILL
+    patten_text: 'srun: launching (?P<qid>\d+[.]\d+) on host \w+, \d+ tasks:'

@@ -17,6 +17,9 @@ from pprint import pformat
 
 import six
 
+import re
+import shlex
+
 from .utils import get_execution_host_info
 
 from monty.tempfile import ScratchDir
@@ -382,6 +385,12 @@ class Custodian(object):
             # While the job is running, we use the handlers that are
             # monitors to monitor the job.
             if isinstance(p, subprocess.Popen):
+                # self.terminate_func works on task level
+                # but I think it should be warks as job level
+                if self.terminate_func is None and Terminator(job.stderr_file).q_type:
+                    job_terminate_func = Terminator(job.stderr_file).run
+                else:
+                    job_terminate_func = self.terminate_func
                 if self.monitors:
                     n = 0
                     while True:
@@ -389,17 +398,16 @@ class Custodian(object):
                         time.sleep(self.polling_time_step)
                         if p.poll() is not None:
                             break
-                        terminate = self.terminate_func or p.terminate
+                        terminate = job_terminate_func or p.terminate
                         if n % self.monitor_freq == 0:
-                            has_error = self._do_check(self.monitors,
-                                                       terminate)
+                            has_error = self._do_check(self.monitors, terminate)
                         if terminate is not None and terminate != p.terminate:
                             time.sleep(self.polling_time_step)
                 else:
                     p.wait()
-                    if self.terminate_func is not None and \
+                    if job_terminate_func is not None and \
                             self.terminate_func != p.terminate:
-                        self.terminate_func()
+                        job_terminate_func()
                         time.sleep(self.polling_time_step)
 
                 zero_return_code = p.returncode == 0
@@ -714,6 +722,57 @@ class Validator(six.with_metaclass(ABCMeta, MSONable)):
             (bool) Indicating if errors are detected.
         """
         pass
+
+
+class Terminator(object):
+    """
+    A tool to cancel vasp process together with job in queue
+    """
+
+    def __init__(self, stderr_file, q_type=None, q_cancel_cmd=None, patten_text=None):
+        """
+        Args:
+            q_type: The type of queue. Check support q_type in terminator.yaml.
+            q_cancel_cmd: The cancel cmd belongs to q_type.
+            pattern_text: the re pattern text for search qid in stderr file.
+        """
+        self.stderr_file = stderr_file
+
+        def get_q_type_from_fireworks():
+            try:
+                from fireworks.fw_config import QUEUEADAPTER_LOC
+                from fireworks.utilities.fw_serializers import load_object_from_file
+                return load_object_from_file(QUEUEADAPTER_LOC).q_type
+            except:
+                return None
+        self.q_type = q_type or get_q_type_from_fireworks()
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        try:
+            q_terminator = loadfn(os.path.join(module_dir, "terminator.yaml"))[self.q_type]
+        except KeyError:
+            q_terminator = loadfn(os.path.join(module_dir, "terminator.yaml"))[None]
+        self.q_cancel_cmd = q_cancel_cmd or q_terminator["q_cancel_cmd"]
+        self.patten_text = patten_text or q_terminator["patten_text"]
+
+    def parse_qid(self):
+        qid_patten = re.compile(self.patten_text)
+        qid = None
+        with open(self.stderr_file) as f:
+            err_text = f.readlines()
+        for line in err_text:
+            m = qid_patten.search(line)
+            if m:
+                qid = m.group("qid")
+        if not qid:
+            raise ValueError("Can't find qid in STDERR file")
+        return qid
+
+    def run(self):
+        if self.q_type:
+            qid = self.parse_qid()
+            scancel_cmd = shlex.split(" ".join([self.q_cancel_cmd, qid]))
+            logging.info("Terminate with:\n    {}".format(scancel_cmd))
+            subprocess.Popen(scancel_cmd)
 
 
 class CustodianError(Exception):
