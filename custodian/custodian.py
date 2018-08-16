@@ -378,6 +378,10 @@ class Custodian(object):
             # corrections.
             has_error = False
             zero_return_code = True
+            # sleep if vasp haven't really start
+            if job.tracker:
+                while not os.path.isfile(job.tracker):
+                    time.sleep(self.polling_time_step)
 
             # While the job is running, we use the handlers that are
             # monitors to monitor the job.
